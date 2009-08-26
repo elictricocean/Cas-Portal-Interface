@@ -1,0 +1,259 @@
+/*
+ * CASTypeAheadTextField.j
+ * CASTypeAheadTextField
+ *
+ * Created by elictricocean on August 6, 2009.
+ * Copyright 2009, MettaMedia All rights reserved.
+ */
+
+@import <Foundation/CPObject.j>
+@import <AppKit/AppKit.j>
+
+@implementation CASTypeAheadTextField : CPTextField
+{
+	_CPMenuWindow typeAheadMenuWindow;
+	CPMenu openMenu;
+	CPString identifier;
+	id dataSource;
+	int selectedIndex;
+}
+
+-(id)initWithFrame:(CGRect)aFrame
+{
+	self = [super initWithFrame:aFrame];
+	if(self)
+	{
+		selectedIndex = -1;
+		[self setDelegate:self];
+		[self setTarget:self];
+		[self setAction:@selector(search:)];
+		if (document.attachEvent)
+			_DOMElement.attachEvent("on" + CPDOMEventKeyDown, function(anEvent){ [self keyDown:anEvent]; });
+		else
+			_DOMElement.addEventListener(CPDOMEventKeyDown, function(anEvent){ [self keyDown:anEvent]; }, NO);
+	}
+	return self;
+}
+
+-(void)setDataSource:(id)aDataSource
+{
+	dataSource = aDataSource;
+}
+
+-(id)dataSource
+{
+	return dataSource;
+}
+
+-(void)setIdentifier:(CPString)anIdentifier
+{
+	identifier = anIdentifier;
+}
+
+-(CPString)identifier
+{
+	return identifier;
+}
+
+-(void)typedAhead:(id)sender
+{
+	var value = [sender title];
+	if(dataSource && [dataSource respondsToSelector:@selector(searchField:didChooseItem:)])
+		[dataSource searchField:self didChooseItem:value];
+		
+	[self setStringValue:value];
+}
+
+-(void)search:(id)sender
+{		
+	if(typeAheadMenuWindow)
+	{
+		if([openMenu highlightedItem])//&& no mouse?
+		{
+			CPLog([[openMenu highlightedItem] title]);
+			[self _addStringToRecentSearches:[[openMenu highlightedItem] title]];
+			[self _updateSearchMenu];
+			[self setStringValue:[[openMenu highlightedItem] title]];
+			_DOMElement.lastChild.value = [[openMenu highlightedItem] title];//This shouldn't be required
+			CPLog(@"string is %@", [self stringValue]);
+			[self setNeedsLayout];
+			[self setNeedsDisplay:YES];
+		}
+		[typeAheadMenuWindow close];
+		var menu = [typeAheadMenuWindow menu];
+		[_CPMenuWindow poolMenuWindow:typeAheadMenuWindow];
+		var mDelegate = [menu delegate];
+		if ([mDelegate respondsToSelector:@selector(menuDidClose:)])
+	        [mDelegate menuDidClose:menu];
+		typeAheadMenuWindow = nil;
+	}	
+	
+	if(dataSource && [dataSource respondsToSelector:@selector(searchField:didSearch:)])
+		[dataSource searchField:self didSearch:[self stringValue]];
+}
+
+-(void)createContextMenuWithArray:(CPArray)anArray
+{
+	if(typeAheadMenuWindow)
+	{
+		[typeAheadMenuWindow close];
+		var menu = [typeAheadMenuWindow menu];
+		[_CPMenuWindow poolMenuWindow:typeAheadMenuWindow];
+		var mDelegate = [menu delegate];
+		if ([mDelegate respondsToSelector:@selector(menuDidClose:)])
+	        [mDelegate menuDidClose:menu];
+		typeAheadMenuWindow = nil;
+		openMenu = nil;
+		selectedIndex = -1;
+	}
+	if([anArray count] == 0)
+		return;
+	
+	openMenu = [[CPMenu alloc] initWithTitle:@"typeahead"];
+	for(var i = 0; i < [anArray count]; i++)
+	{
+		var item = [[CPMenuItem alloc] initWithTitle:[anArray objectAtIndex:i] action:@selector(typedAhead:) keyEquivalent:nil];
+		[item setTarget:self];
+		[openMenu addItem:item];
+	}
+	typeAheadMenuWindow = [self popUpContextMenu:openMenu 
+									  atLocation:[self convertPoint:CPPointMake(CPRectGetMinX([self frame])+25, CPRectGetMaxY([self frame])-4) fromView:self]];
+}
+
+-(void)controlTextDidBeginEditing:(id)aNote
+{
+	if(dataSource && [dataSource respondsToSelector:@selector(searchFieldDidBeginTyping:)])
+		[dataSource searchFieldDidBeginTyping:self];
+}
+
+-(void)controlTextDidEndEditing:(id)aNote
+{
+	if(dataSource && [dataSource respondsToSelector:@selector(searchFieldDidEndTyping:)])
+		[dataSource searchFieldDidEndTyping:self];
+}
+
+-(void)controlTextDidChange:(id)aNote
+{	
+	var searchValue = [self stringValue];	
+	
+	if(dataSource && [dataSource respondsToSelector:@selector(URLForSearchField:queryString:)])
+	{
+		var url = [dataSource URLForSearchField:self queryString:searchValue];
+		var request = [[CPURLRequest alloc] initWithURL:url];
+		var typeAheadConnection = [[CPURLConnection alloc] initWithRequest:request delegate:self startImmediately:YES];
+	}
+	else if(dataSource && [dataSource respondsToSelector:@selector(filteredArrayForSearchField:queryString:)])
+	{
+		var array = [dataSource filteredArrayForSearchField:self queryString:searchValue]
+		[self createContextMenuWithArray:array];
+	}
+	else
+	{
+		CPLog(@"Error: dataSource is not set or dataSource does not respond to URLForSearchField:queryString:/filteredArrayForSearchField:queryString:");
+		return;
+	}	
+}
+
+- (void)connection:(CPURLConnection)aConnection didReceiveData:(CPString)jsonString
+{
+	try
+	{
+		var data = JSON.parse(jsonString);		
+		return [self createContextMenuWithArray:data];
+	}
+	catch(error)
+	{
+		if(typeAheadMenuWindow)
+		{
+			[typeAheadMenuWindow close];
+			var menu = [typeAheadMenuWindow menu];
+			[_CPMenuWindow poolMenuWindow:typeAheadMenuWindow];
+			var mDelegate = [menu delegate];
+			if ([mDelegate respondsToSelector:@selector(menuDidClose:)])
+		        [mDelegate menuDidClose:menu];
+			typeAheadMenuWindow = nil;
+			openMenu = nil;
+			selectedIndex = -1;
+		}
+	}
+}
+
+-(void)connection:(CPURLConnection)aConnection didFailWithError:(CPError)anError
+{
+	CPLog(@"connection failed with error %@", anError);
+}
+
+-(void)keyDown:(CPEvent)anEvent
+{
+	if(typeAheadMenuWindow)
+	{
+		if(anEvent.keyCode == 40 && [openMenu indexOfItem:[openMenu highlightedItem]] < [openMenu numberOfItems]-1)
+		{
+			selectedIndex = [openMenu indexOfItem:[openMenu highlightedItem]] + 1;
+			CPLog(selectedIndex);
+			[openMenu cancelTracking];
+			[openMenu _highlightItemAtIndex:selectedIndex];
+			
+		}
+		else if(anEvent.keyCode == 38 && selectedIndex > 0)
+		{
+			selectedIndex = [openMenu indexOfItem:[openMenu highlightedItem]] - 1;
+			CPLog(selectedIndex);
+			[openMenu cancelTracking];
+			[openMenu _highlightItemAtIndex:selectedIndex];			
+		}
+	}
+}
+
+/* ignore */
+- (_CPMenuWindow)popUpContextMenu:(CPMenu)aMenu atLocation:(CPPoint)aPoint
+{
+    var mDelegate = [aMenu delegate];
+    
+    if ([mDelegate respondsToSelector:@selector(menuWillOpen:)])
+        [mDelegate menuWillOpen:aMenu];
+    
+    var aFont = [CPFont systemFontOfSize:12.0];
+
+    var theWindow = [self window],
+        menuWindow = [_CPMenuWindow menuWindowWithMenu:aMenu font:aFont];
+
+    [menuWindow setDelegate:self];
+    [menuWindow setBackgroundStyle:_CPMenuWindowPopUpBackgroundStyle];
+	[menuWindow setMinWidth:CPRectGetWidth([self frame])-25.0];
+
+	var newEvent = [CPEvent keyEventWithType:CPKeyDown
+    								location:aPoint
+    						   modifierFlags:nil
+								   timestamp:0
+								windowNumber:[[self window] windowNumber]
+									 context:nil
+								  characters:nil
+				 charactersIgnoringModifiers:nil
+								   isARepeat:NO
+									 keyCode:nil];
+
+    [menuWindow setFrameOrigin:[[newEvent window] convertBaseToBridge:aPoint]];
+	[menuWindow orderFront:self];
+    [menuWindow beginTrackingWithEvent:newEvent	sessionDelegate:self didEndSelector:@selector(_menuWindowDidFinishTracking:highlightedItem:)];
+    
+    return menuWindow;
+}
+
+/* ignore */
+- (void)_menuWindowDidFinishTracking:(_CPMenuWindow)aMenuWindow highlightedItem:(CPMenuItem)aMenuItem
+{
+    var menu = [aMenuWindow menu];
+
+    [_CPMenuWindow poolMenuWindow:aMenuWindow];
+
+    var mDelegate = [menu delegate];
+
+    if ([mDelegate respondsToSelector:@selector(menuDidClose:)])
+        [mDelegate menuDidClose:menu];
+
+    if([aMenuItem isEnabled])
+        [CPApp sendAction:[aMenuItem action] to:[aMenuItem target] from:aMenuItem];
+}
+
+@end
